@@ -118,7 +118,8 @@ void sensor_task(void *pv) {
             char hora_envio[16];
             strftime(hora_envio, sizeof(hora_envio), "%H:%M:%S", &tm_info);
             char fecha_actual[20];
-            strftime(fecha_actual, sizeof(fecha_actual), "%d-%m-%y", &tm_info);
+            // Formato actualizado a DD-MM-YYYY
+            strftime(fecha_actual, sizeof(fecha_actual), "%d-%m-%Y", &tm_info);
 
             SensorData avg = {0};
             double denom = (double)sample_count;

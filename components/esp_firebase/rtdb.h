@@ -32,6 +32,11 @@ namespace ESPFirebase
         esp_err_t patchData(const char* path, const Json::Value& data);
         
         esp_err_t deleteData(const char* path);
+        // Borra subrutas por día para mantener máximo de días (keys lex ordenadas)
+        esp_err_t trimDays(const char* root_path, int max_days);
+        // Borra los N más antiguos en un nodo con push-keys (sin cambiar estructura)
+        // Devuelve cantidad borrada o <0 en error
+        int trimOldestBatch(const char* root_path, int batch_size);
         RTDB(FirebaseApp* app, const char* database_url);
     };
 

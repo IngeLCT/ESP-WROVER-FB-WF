@@ -19,7 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define FORCE_AP_NAT_MODE // Comenta esta línea para desactivar el modo forzado
+//#define FORCE_AP_NAT_MODE // Comenta esta línea para desactivar el modo forzado
 
 static const char *TAG = "captive_mgr";
 
@@ -111,7 +111,6 @@ esp_err_t captive_manager_init(const captive_manager_cfg_t *cfg) {
     g_sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t wic = WIFI_INIT_CONFIG_DEFAULT();
-    
     ESP_ERROR_CHECK(esp_wifi_init(&wic));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
@@ -122,7 +121,20 @@ esp_err_t captive_manager_init(const captive_manager_cfg_t *cfg) {
 }
 
 static void start_with_saved_or_captive(void) {
-    
+    #if defined(FORCE_AP_NAT_MODE)
+        ESP_LOGI(TAG, "[PRUEBA] AP+NAT router; arrancando AP y conectando STA si hay credenciales");
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        ESP_ERROR_CHECK(start_ap());
+        start_http_sta_minimal(); // solo /wifi/clear
+        // Intentar conectar STA con credenciales guardadas si existen
+        if (wifi_store_has_credentials()) {
+            char ssid[33], pass[65];
+            if (wifi_store_load(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
+                connect_sta(ssid, pass, true);
+            }
+        }
+        set_state(CAP_STATE_WAIT_LOGIN);
+    #else
         if (wifi_store_has_credentials()) {
             char ssid[33], pass[65];
             if (wifi_store_load(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
@@ -137,7 +149,7 @@ static void start_with_saved_or_captive(void) {
         ESP_ERROR_CHECK(start_http());
         set_state(CAP_STATE_SCAN);
         scan_start();
-    
+    #endif
 }
 
 esp_err_t captive_manager_start(void) {
@@ -200,15 +212,11 @@ void captive_manager_notify_sta_got_ip(void) {
         g_connect_post_pending_save = false;
     }
 
-    if (g_using_saved) {
-        // Espera corta antes de primera verificación
-        vTaskDelay(pdMS_TO_TICKS(g_cfg.startup_check_delay_ms));
-        // Configurar DNS del AP con el DNS de la STA y habilitar NAT
-        // Establecer STA como interfaz por defecto para salidas
+    #if defined(FORCE_AP_NAT_MODE)
+        // Modo forzado: siempre habilita NAT y APSTA, sin comprobación de internet
         if (g_sta_netif) esp_netif_set_default_netif(g_sta_netif);
-        // Propagar DNS de STA al AP (DHCP server ofrece DNS correcto)
         if (g_ap_netif && g_sta_netif) {
-            uint8_t dhcps_offer_option = 0x02; // DHCPS_OFFER_DNS
+            uint8_t dhcps_offer_option = 0x02;
             esp_netif_dns_info_t dns;
             if (esp_netif_get_dns_info(g_sta_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_stop(g_ap_netif));
@@ -218,26 +226,21 @@ void captive_manager_notify_sta_got_ip(void) {
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_start(g_ap_netif));
             }
         }
-        // Habilitar NAT ahora que STA tiene IP
         captive_manager_enable_nat();
-        // Mantener estado de espera de login si hay portal; si no, periodic moverá a OPERATIONAL
         set_state(CAP_STATE_WAIT_LOGIN);
-    } else {
-        // Flujo normal desde portal (usuario recién configuró)
-        // Levantamos NAT si aún no estaba (ya debería estar en APSTA)
-        // Al estar en CONNECTING desde portal, estábamos en APSTA? Sí: connect_post cambia modo a APSTA
-        // Si no hay AP (caso improbable) lo iniciamos
-        // Primero comprobar si ya hay internet (quizá red sin portal)
+    #else
+        // Modo normal: decide según conectividad
+        // Pequeña espera opcional para estabilizar la conexión antes de comprobar
+        vTaskDelay(pdMS_TO_TICKS(g_cfg.startup_check_delay_ms));
         if (connectivity_portal_open()) {
-            // Ya hay internet, podemos apagar AP inmediatamente si queremos saltar portal
+            // Hay internet: apaga AP, entra en modo STA, deja endpoint /wifi/clear y mDNS
             set_state(CAP_STATE_VERIFY);
             g_verify_success = 0;
-            // La tarea periodic hará transición a OPERATIONAL al completar éxitos
         } else {
-            // Configurar DNS del AP desde STA y habilitar NAT
+            // No hay internet: habilita NAT y APSTA
             if (g_sta_netif) esp_netif_set_default_netif(g_sta_netif);
             if (g_ap_netif && g_sta_netif) {
-                uint8_t dhcps_offer_option = 0x02; // DHCPS_OFFER_DNS
+                uint8_t dhcps_offer_option = 0x02;
                 esp_netif_dns_info_t dns;
                 if (esp_netif_get_dns_info(g_sta_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
                     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_stop(g_ap_netif));
@@ -250,7 +253,7 @@ void captive_manager_notify_sta_got_ip(void) {
             captive_manager_enable_nat();
             set_state(CAP_STATE_WAIT_LOGIN);
         }
-    }
+    #endif
 }
 
 void captive_manager_notify_sta_disconnected(int reason_code) {
@@ -595,11 +598,11 @@ static void start_mdns_service(void) {
     static bool mdns_started = false;
     if (mdns_started) return;
     if (mdns_init() == ESP_OK) {
-        mdns_hostname_set("esp32");
+        mdns_hostname_set("LCTMedAmb");
         mdns_instance_name_set("ESP32 Ambiente");
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
         mdns_started = true;
-        ESP_LOGI(TAG, "mDNS started as esp32.local");
+        ESP_LOGI(TAG, "mDNS started as LCTMedAmb.local");
     } else {
         ESP_LOGW(TAG, "mDNS init failed");
     }
@@ -639,6 +642,37 @@ void captive_manager_disable_nat(void) {
 
 // Stub de verificación de portal/conectividad. Ajusta según tu lógica real.
 bool connectivity_portal_open(void) {
-    // Para modo de prueba AP+NAT, devolver false evita cerrar el AP.
+    // Verifica conectividad saliente intentando acceder a un endpoint conocido
+    // que devuelve HTTP 204 sin contenido cuando hay internet sin portal cautivo.
+    // Evitamos seguir redirecciones para detectar portales cautivos (3xx/200 con contenido).
+    esp_http_client_config_t cfg = {
+        .url = "http://connectivitycheck.gstatic.com/generate_204",
+        .timeout_ms = 2000,
+        .disable_auto_redirect = true,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGW(TAG, "connectivity_check: init failed");
+        return false;
+    }
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "connectivity_check: open err=%s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return false;
+    }
+    int64_t hdrs = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    // Cerrar y limpiar
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    ESP_LOGI(TAG, "connectivity_check: http status=%d (hdrs=%lld)", status, (long long)hdrs);
+    // Considera 204 como OK, y 200 como parcialmente OK (algunas redes devuelven 200)
+    if (status == 204 || status == 200) {
+        return true;
+    }
     return false;
 }
+
+// maybe_start_captive_after_saved_ip eliminado: no se usa

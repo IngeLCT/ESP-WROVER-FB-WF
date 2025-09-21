@@ -72,3 +72,4 @@ int firebase_trim_oldest_batch(const char* root_path, int batch_size) {
 }
 
 }
+

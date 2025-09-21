@@ -70,6 +70,7 @@ void sensor_task(void *pv) {
         vTaskDelete(NULL);
         return;
     }
+    
     vTaskDelay(pdMS_TO_TICKS(1000));
     firebase_delete("/historial_mediciones");
 

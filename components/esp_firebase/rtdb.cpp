@@ -1,8 +1,9 @@
 #include <iostream>
 #include <vector>
+#include <algorithm>
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_log.h"
 
 #include "rtdb.h"
 
@@ -170,142 +171,98 @@ esp_err_t RTDB::patchData(const char* path, const Json::Value& data)
     return err;
 }
 
-
 esp_err_t RTDB::deleteData(const char* path)
 {
-    // Use print=silent so RTDB does not return the entire deleted payload
+    // --- URL con writeSizeLimit=unlimited (sin print=silent en DELETE) ---
     std::string url = RTDB::base_database_url;
     url += path;
-    url += ".json?auth=" + this->app->auth_token + "&print=silent";
-    this->app->setHeader("content-type", "application/json");
+    url += ".json?writeSizeLimit=unlimited&auth=" + this->app->auth_token;
+
+    // --- Timeout largo SOLO para esta operación ---
+    constexpr int LONG_TIMEOUT_MS = 600000;  // 10 min
+    this->app->setHttpTimeoutMs(LONG_TIMEOUT_MS);
+
+    // --- Headers mínimos para DELETE sin cuerpo ---
+    this->app->setHeader("Content-Length", "0");
+    this->app->setHeader("Accept", "application/json");
+
+    // --- Primer intento ---
     http_ret_t http_ret = this->app->performRequest(url.c_str(), HTTP_METHOD_DELETE, "");
-    if (!(http_ret.err == ESP_OK && http_ret.status_code == 200) && http_ret.status_code == 401) {
-        ESP_LOGW(RTDB_TAG, "DELETE 401 -> intentando refresh auth");
+
+    // --- Si el token expiró, refresca y reintenta UNA vez ---
+    if (!(http_ret.err == ESP_OK && (http_ret.status_code >= 200 && http_ret.status_code < 300))
+        && http_ret.status_code == 401) {
+
+        ESP_LOGW(RTDB_TAG, "DELETE 401 -> intentando refresh de auth y reintento");
         this->app->forceRefreshAuth();
-        url = RTDB::base_database_url; url += path; url += ".json?auth=" + this->app->auth_token + "&print=silent";
-        this->app->setHeader("content-type", "application/json");
-        http_ret = this->app->performRequest(url.c_str(), HTTP_METHOD_DELETE, "");
+
+        std::string url2 = RTDB::base_database_url;
+        url2 += path;
+        url2 += ".json?writeSizeLimit=unlimited&auth=" + this->app->auth_token;
+
+        this->app->setHeader("Content-Length", "0");
+        this->app->setHeader("Accept", "application/json");
+
+        http_ret = this->app->performRequest(url2.c_str(), HTTP_METHOD_DELETE, "");
     }
-    if (http_ret.err == ESP_OK && http_ret.status_code == 200) {
-        this->app->clearHTTPBuffer();
-        ESP_LOGI(RTDB_TAG, "DELETE successful");
+
+    // --- Restaurar timeout SIEMPRE ---
+    this->app->restoreDefaultHttpTimeout();
+
+    // --- Limpiar buffer compartido ---
+    this->app->clearHTTPBuffer();
+
+    // --- Resultado ---
+    if (http_ret.err == ESP_OK && (http_ret.status_code >= 200 && http_ret.status_code < 300)) {
+        ESP_LOGI(RTDB_TAG, "DELETE exitoso (status=%d)", http_ret.status_code);
         return ESP_OK;
     }
 
-    // Fallback: if the node is too large for a single delete, delete children in chunks
-    // Detect typical 400 with message "Data to write exceeds..."
-    bool maybe_too_large = (http_ret.status_code == 400);
-    if (!maybe_too_large) {
-        ESP_LOGE(RTDB_TAG, "DELETE failed (status=%d).", http_ret.status_code);
-        this->app->clearHTTPBuffer();
-        return ESP_FAIL;
-    }
-
-    ESP_LOGW(RTDB_TAG, "DELETE grande: intentando borrado por lotes (shallow)");
-
-    // Get shallow list of children keys
-    std::string shallow_url = RTDB::base_database_url;
-    shallow_url += path;
-    shallow_url += ".json?shallow=true&auth=" + this->app->auth_token;
-    this->app->setHeader("content-type", "application/json");
-    http_ret_t get_ret = this->app->performRequest(shallow_url.c_str(), HTTP_METHOD_GET, "");
-    if (!(get_ret.err == ESP_OK && get_ret.status_code == 200)) {
-        ESP_LOGE(RTDB_TAG, "Fallo obteniendo claves (shallow) status=%d", get_ret.status_code);
-        this->app->clearHTTPBuffer();
-        return ESP_FAIL;
-    }
-
-    // Parse keys-only response
-    const char* begin = this->app->local_response_buffer;
-    const char* end = begin + strlen(this->app->local_response_buffer);
-    Json::Reader reader;
-    Json::Value keys_obj;
-    reader.parse(begin, end, keys_obj, false);
-    this->app->clearHTTPBuffer();
-
-    if (!keys_obj.isObject()) {
-        // Nothing to delete or unexpected shape
-        ESP_LOGW(RTDB_TAG, "Respuesta shallow no es objeto; reintentando DELETE directo");
-        // Try direct delete once more (now possibly smaller)
-        std::string retry_url = RTDB::base_database_url;
-        retry_url += path;
-        retry_url += ".json?auth=" + this->app->auth_token + "&print=silent";
-        this->app->setHeader("content-type", "application/json");
-        http_ret_t retry_ret = this->app->performRequest(retry_url.c_str(), HTTP_METHOD_DELETE, "");
-        this->app->clearHTTPBuffer();
-        if (retry_ret.err == ESP_OK && retry_ret.status_code == 200) return ESP_OK;
-        ESP_LOGE(RTDB_TAG, "DELETE failed tras reintento");
-        return ESP_FAIL;
-    }
-
-    // Iterate and delete each child key
-    std::vector<std::string> keys;
-    keys.reserve(keys_obj.getMemberNames().size());
-    for (const auto& k : keys_obj.getMemberNames()) {
-        keys.emplace_back(k);
-    }
-
-    size_t ok_count = 0;
-    for (const auto& k : keys) {
-        std::string child_path = std::string(path) + "/" + k;
-        if (RTDB::deleteData(child_path.c_str()) == ESP_OK) {
-            ok_count++;
-        } else {
-            ESP_LOGW(RTDB_TAG, "Fallo al borrar hijo: %s", child_path.c_str());
-        }
-        // Pequeña pausa para no saturar
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    // Try delete parent once children are gone
-    std::string final_url = RTDB::base_database_url;
-    final_url += path;
-    final_url += ".json?auth=" + this->app->auth_token + "&print=silent";
-    this->app->setHeader("content-type", "application/json");
-    http_ret_t final_ret = this->app->performRequest(final_url.c_str(), HTTP_METHOD_DELETE, "");
-    this->app->clearHTTPBuffer();
-    if (final_ret.err == ESP_OK && final_ret.status_code == 200) {
-        ESP_LOGI(RTDB_TAG, "DELETE por lotes exitoso (%u/%u)", (unsigned)ok_count, (unsigned)keys.size());
-        return ESP_OK;
-    }
-
-    ESP_LOGE(RTDB_TAG, "DELETE final fallo (status=%d) tras borrar hijos (%u/%u)", final_ret.status_code, (unsigned)ok_count, (unsigned)keys.size());
-    return ok_count == keys.size() ? ESP_OK : ESP_FAIL;
+    ESP_LOGE(RTDB_TAG, "DELETE fallo (err=0x%x, status=%d)", (unsigned)http_ret.err, http_ret.status_code);
+    return ESP_FAIL;
 }
 
-// Nota: implementación opcional; no se usa en el flujo actual
 esp_err_t RTDB::trimDays(const char* root_path, int max_days)
 {
     if (max_days <= 0) return ESP_OK;
+
+    // Listar días (claves) bajo root con shallow=true
     std::string url = RTDB::base_database_url;
     url += root_path;
     url += ".json?shallow=true&auth=" + this->app->auth_token;
     this->app->setHeader("content-type", "application/json");
     http_ret_t http_ret = this->app->performRequest(url.c_str(), HTTP_METHOD_GET, "");
     if (!(http_ret.err == ESP_OK && http_ret.status_code == 200)) {
+        ESP_LOGE(RTDB_TAG, "trimDays: fallo GET shallow status=%d", http_ret.status_code);
         this->app->clearHTTPBuffer();
         return ESP_FAIL;
     }
+
     const char* begin = this->app->local_response_buffer;
     const char* end = begin + strlen(this->app->local_response_buffer);
     Json::Reader reader;
-    Json::Value obj;
-    reader.parse(begin, end, obj, false);
+    Json::Value days_obj;
+    reader.parse(begin, end, days_obj, false);
     this->app->clearHTTPBuffer();
-    if (!obj.isObject()) return ESP_OK;
-    std::vector<std::string> keys = obj.getMemberNames();
-    if ((int)keys.size() <= max_days) return ESP_OK;
-    std::sort(keys.begin(), keys.end());
-    int to_delete = (int)keys.size() - max_days;
+    if (!days_obj.isObject()) return ESP_OK; // nada que recortar
+
+    std::vector<std::string> days = days_obj.getMemberNames();
+    if ((int)days.size() <= max_days) return ESP_OK;
+
+    // Las fechas deben estar en formato YYYY-MM-DD para que el orden lex sea cronológico
+    std::sort(days.begin(), days.end()); // asc: más antiguo primero si YYYY-MM-DD
+
+    int to_delete = (int)days.size() - max_days;
     for (int i = 0; i < to_delete; ++i) {
-        std::string child = std::string(root_path) + "/" + keys[i];
+        std::string child = std::string(root_path) + "/" + days[i];
+        ESP_LOGI(RTDB_TAG, "trimDays: borrando día antiguo %s", days[i].c_str());
         RTDB::deleteData(child.c_str());
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     return ESP_OK;
 }
 
-// Borra los N elementos más antiguos bajo root_path usando orderBy=$key y PATCH
+// Borra los N elementos más antiguos bajo root_path usando orderBy=$key y PATCH con print=silent
 int RTDB::trimOldestBatch(const char* root_path, int batch_size)
 {
     if (batch_size <= 0) return 0;
@@ -315,11 +272,9 @@ int RTDB::trimOldestBatch(const char* root_path, int batch_size)
     this->app->setHeader("content-type", "application/json");
     http_ret_t get_ret = this->app->performRequest(list_url.c_str(), HTTP_METHOD_GET, "");
     if (!(get_ret.err == ESP_OK && get_ret.status_code == 200)) {
-        ESP_LOGE(RTDB_TAG, "trimOldestBatch: GET status=%d", get_ret.status_code);
         this->app->clearHTTPBuffer();
         return -1;
     }
-
     const char* begin = this->app->local_response_buffer;
     const char* end = begin + strlen(this->app->local_response_buffer);
     Json::Reader reader;
@@ -344,15 +299,11 @@ int RTDB::trimOldestBatch(const char* root_path, int batch_size)
     patch_url += ".json?auth=" + this->app->auth_token + "&print=silent";
     this->app->setHeader("content-type", "application/json");
     http_ret_t patch_ret = this->app->performRequest(patch_url.c_str(), HTTP_METHOD_PATCH, patch_body);
+    this->app->clearHTTPBuffer();
     if (!(patch_ret.err == ESP_OK && patch_ret.status_code >= 200 && patch_ret.status_code < 300)) {
-        ESP_LOGE(RTDB_TAG, "trimOldestBatch: PATCH status=%d", patch_ret.status_code);
-        this->app->clearHTTPBuffer();
         return -2;
     }
-    this->app->clearHTTPBuffer();
-    ESP_LOGI(RTDB_TAG, "trimOldestBatch: borrados %u", (unsigned)keys.size());
     return (int)keys.size();
 }
-
 
 }

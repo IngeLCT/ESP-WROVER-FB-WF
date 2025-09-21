@@ -14,9 +14,9 @@
 #include "sensors.h"
 #include "Privado.h"   // aquí defines UNWIRED_TOKEN
 
-static const char *GEO_TAG = "GEO_UNWIRED";
+static const char *GEO_TAG = "UnwiredLabs";
 #define UNWIRED_URL "https://us1.unwiredlabs.com/v2/process.php"
-#define WIFI_MAX_APS 6          // cuántos APs enviar (ajusta si quieres)
+#define WIFI_MAX_APS 10          // cuántos APs enviar (ajusta si quieres)
 #define REQ_BODY_MAX 1536
 static char req_body[REQ_BODY_MAX];
 static char resp_body[2048];
@@ -95,7 +95,7 @@ void geoapify_fetch_once_wifi_unwired(void) {
     // 2) Construir JSON para Unwired Labs
     // formato: { "token":"...","wifi":[{"bssid":"aa:bb:...","signal":-65}, ...] }
     size_t pos = 0;
-    pos += snprintf(req_body + pos, sizeof(req_body) - pos, "{\"token\":\"%s\",\"wifi\":[", UNWIRED_TOKEN);
+    pos += snprintf(req_body + pos, sizeof(req_body) - pos, "{\"token\":\"%s\",\"wifi\":[", UNWIREDLABS_TOKEN);
 
     for (int i = 0; i < ap_num && pos < (sizeof(req_body) - 128); ++i) {
         char mac_str[18];
@@ -117,7 +117,7 @@ void geoapify_fetch_once_wifi_unwired(void) {
         .event_handler = geo_http_evt,
         .user_data = &acc,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 8000,
+        .timeout_ms = 20000,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {

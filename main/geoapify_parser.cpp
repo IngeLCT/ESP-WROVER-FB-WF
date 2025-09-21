@@ -3,7 +3,7 @@
 #include "esp_log.h"
 #include <string>
 
-static const char *TAG_GP = "GEOAPIFY_PARSE";
+static const char *TAG_GP = "UnwiredLabs_Parse";
 
 extern "C" void geoapify_parse_and_set_city_state(const char *json_buf, int len) {
     if (!json_buf || len <= 0) return;

@@ -111,6 +111,7 @@ esp_err_t captive_manager_init(const captive_manager_cfg_t *cfg) {
     g_sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t wic = WIFI_INIT_CONFIG_DEFAULT();
+    
     ESP_ERROR_CHECK(esp_wifi_init(&wic));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
@@ -121,20 +122,7 @@ esp_err_t captive_manager_init(const captive_manager_cfg_t *cfg) {
 }
 
 static void start_with_saved_or_captive(void) {
-    #if defined(FORCE_AP_NAT_MODE)
-        ESP_LOGI(TAG, "[PRUEBA] AP+NAT router; arrancando AP y conectando STA si hay credenciales");
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-        ESP_ERROR_CHECK(start_ap());
-        start_http_sta_minimal(); // solo /wifi/clear
-        // Intentar conectar STA con credenciales guardadas si existen
-        if (wifi_store_has_credentials()) {
-            char ssid[33], pass[65];
-            if (wifi_store_load(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
-                connect_sta(ssid, pass, true);
-            }
-        }
-        set_state(CAP_STATE_WAIT_LOGIN);
-    #else
+    
         if (wifi_store_has_credentials()) {
             char ssid[33], pass[65];
             if (wifi_store_load(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
@@ -149,7 +137,7 @@ static void start_with_saved_or_captive(void) {
         ESP_ERROR_CHECK(start_http());
         set_state(CAP_STATE_SCAN);
         scan_start();
-    #endif
+    
 }
 
 esp_err_t captive_manager_start(void) {
@@ -654,5 +642,3 @@ bool connectivity_portal_open(void) {
     // Para modo de prueba AP+NAT, devolver false evita cerrar el AP.
     return false;
 }
-
-// maybe_start_captive_after_saved_ip eliminado: no se usa

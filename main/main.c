@@ -26,7 +26,7 @@
 #include "Privado.h"
 #include "captive_manager.h"
 
-void geoapify_fetch_once(void);
+void geoapify_fetch_once_wifi_unwired(void);
 
 #define SENSOR_TASK_STACK 10240
 #define ENABLE_HTTP_VERBOSE 1
@@ -62,6 +62,8 @@ void sensor_task(void *pv) {
     strftime(inicio_str, sizeof(inicio_str), "%H:%M:%S", &start_tm_info);
 
     bool first_send = true;
+
+    geoapify_fetch_once_wifi_unwired();
 
     if (firebase_init() != 0) {
         ESP_LOGE(TAG, "Error inicializando Firebase");

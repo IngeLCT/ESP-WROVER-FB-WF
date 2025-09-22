@@ -1,4 +1,4 @@
-// Geoapify.c  -> Unwired Labs (IP-only)
+// ubicacion.c  -> Unwired Labs (IP-only)
 // - Usa únicamente geolocalización por IP (WiFi deshabilitado en cuenta).
 // - Deja comentado el flujo WiFi para reactivarlo cuando lo habiliten.
 // - Evita overflow de stack usando buffers estáticos.

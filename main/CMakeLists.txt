@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "sensors.c" "Geoapify.c" "main.c"
+    SRCS "sensors.c" "ubicacion.c" "main.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_firebase
